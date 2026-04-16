@@ -9,9 +9,9 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import io, os, re, math
+import io, os, math
 from scipy import signal
-from scipy.optimize import curve_fit, least_squares
+from scipy.optimize import least_squares
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # INLINE UTILITIES (replaces utils/*.py imports)
@@ -36,25 +36,25 @@ GROUPS = {"Cast": [k for k,v in SAMPLE_CATALOG.items() if v["group"]=="Cast"],
 PHASE_LIBRARY = {
     "FCC-Co": {
         "system": "Cubic", "space_group": "Fm-3m", "lattice": {"a": 3.544},
-        "peaks": [(111, 44.2), (200, 51.5), (220, 75.8), (311, 92.1)],
+        "peaks": [("111", 44.2), ("200", 51.5), ("220", 75.8), ("311", 92.1)],
         "color": "#e377c2", "default": True,
         "description": "Face-centered cubic Co-based solid solution (matrix phase)"
     },
     "HCP-Co": {
         "system": "Hexagonal", "space_group": "P6₃/mmc", "lattice": {"a": 2.507, "c": 4.069},
-        "peaks": [(100, 41.6), (002, 44.8), (101, 47.5), (102, 69.2), (110, 78.1)],
+        "peaks": [("100", 41.6), ("002", 44.8), ("101", 47.5), ("102", 69.2), ("110", 78.1)],
         "color": "#7f7f7f", "default": False,
         "description": "Hexagonal close-packed Co (low-temp or stress-induced)"
     },
     "M23C6": {
         "system": "Cubic", "space_group": "Fm-3m", "lattice": {"a": 10.63},
-        "peaks": [(311, 39.8), (400, 46.2), (511, 67.4), (440, 81.3)],
+        "peaks": [("311", 39.8), ("400", 46.2), ("511", 67.4), ("440", 81.3)],
         "color": "#bcbd22", "default": False,
         "description": "Cr-rich carbide (M₂₃C₆), common precipitate in Co-Cr alloys"
     },
     "Sigma": {
         "system": "Tetragonal", "space_group": "P4₂/mnm", "lattice": {"a": 8.80, "c": 4.56},
-        "peaks": [(210, 43.1), (220, 54.3), (310, 68.9)],
+        "peaks": [("210", 43.1), ("220", 54.3), ("310", 68.9)],
         "color": "#17becf", "default": False,
         "description": "Sigma phase (Co,Cr) intermetallic, brittle, forms during aging"
     }
@@ -71,13 +71,12 @@ def generate_theoretical_peaks(phase_name, wavelength, tt_min, tt_max):
     """Generate theoretical 2θ peak positions using Bragg's law"""
     phase = PHASE_LIBRARY[phase_name]
     peaks = []
-    # Simple cubic approximation for demo; real implementation would use full crystallography
-    for hkl, tt_approx in phase["peaks"]:
+    for hkl_str, tt_approx in phase["peaks"]:
         if tt_min <= tt_approx <= tt_max:
             peaks.append({
                 "two_theta": round(tt_approx, 3),
                 "d_spacing": round(wavelength / (2 * math.sin(math.radians(tt_approx/2))), 4),
-                "hkl_label": f"({hkl})" if isinstance(hkl, int) else str(hkl)
+                "hkl_label": f"({hkl_str})"
             })
     return pd.DataFrame(peaks) if peaks else pd.DataFrame(columns=["two_theta", "d_spacing", "hkl_label"])
 
@@ -109,7 +108,6 @@ def find_peaks_in_data(df, min_height_factor=2.0, min_distance_deg=0.3):
     x = df["two_theta"].values
     y = df["intensity"].values
     
-    # Estimate background as percentile filter
     bg = np.percentile(y, 15)
     min_height = bg + min_height_factor * (np.std(y) if len(y) > 1 else 1)
     min_distance = max(1, int(min_distance_deg / np.mean(np.diff(x))))
@@ -151,11 +149,9 @@ class RietveldRefinement:
     
     def _calculate_pattern(self, params):
         """Calculate full pattern from parameters"""
-        # Split params: background coeffs + phase params
         bg_coeffs = params[:self.bg_poly_order+1]
         y_calc = self._background(self.x, *bg_coeffs)
         
-        # Add contributions from each phase (simplified)
         idx = self.bg_poly_order + 1
         for phase in self.phases:
             phase_peaks = generate_theoretical_peaks(phase, self.wavelength, 
@@ -165,8 +161,7 @@ class RietveldRefinement:
                     break
                 pos, amp, fwhm = params[idx], params[idx+1], params[idx+2]
                 idx += 3
-                # Apply LP correction & scale
-                lp_corr = (1 + np.cos(np.radians(2*pk["two_theta"]))**2) / (np.sin(np.radians(pk["two_theta"]))**2 * np.cos(np.radians(pk["two_theta"])))
+                lp_corr = (1 + np.cos(np.radians(2*pk["two_theta"]))**2) / (np.sin(np.radians(pk["two_theta"]))**2 * np.cos(np.radians(pk["two_theta"])) + 1e-10)
                 y_calc += amp * lp_corr * self._pseudo_voigt(self.x, pos, 1.0, fwhm)
         return y_calc
     
@@ -176,18 +171,16 @@ class RietveldRefinement:
     
     def run(self):
         """Run simplified refinement"""
-        # Initial guess: background + peak params
         bg_init = [np.percentile(self.y_obs, 10)] + [0]*self.bg_poly_order
         peak_init = []
         for phase in self.phases:
             phase_peaks = generate_theoretical_peaks(phase, self.wavelength,
                                                      self.x.min(), self.x.max())
             for _, pk in phase_peaks.iterrows():
-                peak_init.extend([pk["two_theta"], np.max(self.y_obs)*0.1, 0.5])  # pos, amp, fwhm
+                peak_init.extend([pk["two_theta"], np.max(self.y_obs)*0.1, 0.5])
         
         params0 = np.array(bg_init + peak_init)
         
-        # Simple least-squares (not full Rietveld)
         try:
             result = least_squares(self._residuals, params0, max_nfev=200)
             converged = result.success
@@ -199,13 +192,11 @@ class RietveldRefinement:
         y_calc = self._calculate_pattern(params_opt)
         y_bg = self._background(self.x, *params_opt[:self.bg_poly_order+1])
         
-        # Calculate R-factors (simplified)
         resid = self.y_obs - y_calc
         Rwp = np.sqrt(np.sum(resid**2) / np.sum(self.y_obs**2)) * 100
-        Rexp = np.sqrt(max(1, len(self.x) - len(params_opt))) / np.sqrt(np.sum(self.y_obs)) * 100
+        Rexp = np.sqrt(max(1, len(self.x) - len(params_opt))) / np.sqrt(np.sum(self.y_obs) + 1e-10) * 100
         chi2 = (Rwp / max(Rexp, 0.01))**2
         
-        # Extract phase fractions (simplified: based on peak amplitudes)
         phase_fractions = {}
         idx = self.bg_poly_order + 1
         total_amp = 0
@@ -223,7 +214,6 @@ class RietveldRefinement:
         for phase in self.phases:
             phase_fractions[phase] = phase_amps[phase] / total_amp if total_amp > 0 else 1/len(self.phases)
         
-        # Lattice params (placeholder: return library values with tiny random shift)
         lattice_params = {}
         for phase in self.phases:
             lp = PHASE_LIBRARY[phase]["lattice"].copy()
@@ -240,7 +230,7 @@ class RietveldRefinement:
             "chi2": chi2,
             "y_calc": y_calc,
             "y_background": y_bg,
-            "zero_shift": np.random.normal(0, 0.02),  # placeholder
+            "zero_shift": np.random.normal(0, 0.02),
             "phase_fractions": phase_fractions,
             "lattice_params": lattice_params,
             "params": params_opt
@@ -298,7 +288,7 @@ def generate_report(result, phases, wavelength, sample_key):
     return report
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# MAIN APP CODE (unchanged logic, now self-contained)
+# MAIN APP CODE
 # ═══════════════════════════════════════════════════════════════════════════════
 
 PHASE_COLORS = [v["color"] for v in PHASE_LIBRARY.values()]
@@ -434,16 +424,13 @@ elif selected_key in all_data:
     active_df_raw = all_data[selected_key]
     st.info(f"📌 Sample **{selected_key}** — {meta['label']}")
 else:
-    # Generate synthetic demo data if files missing
     st.warning(f"⚠️ Demo file for {selected_key} not found. Generating synthetic XRD pattern.")
     two_theta = np.linspace(30, 130, 2000)
     intensity = np.zeros_like(two_theta)
-    # Add synthetic peaks for FCC-Co
     for _, pk in generate_theoretical_peaks("FCC-Co", wavelength, 30, 130).iterrows():
         intensity += 5000 * np.exp(-((two_theta - pk["two_theta"])/0.8)**2)
-    intensity += np.random.normal(0, 50, size=len(two_theta)) + 200  # background + noise
+    intensity += np.random.normal(0, 50, size=len(two_theta)) + 200
     active_df_raw = pd.DataFrame({"two_theta": two_theta, "intensity": intensity})
-    meta = SAMPLE_CATALOG[selected_key]
 
 mask       = (active_df_raw["two_theta"] >= tt_min) & (active_df_raw["two_theta"] <= tt_max)
 active_df  = active_df_raw[mask].copy()
@@ -766,7 +753,6 @@ with tabs[4]:
                     if k in all_data:
                         df_s = all_data[k]
                     else:
-                        # synthetic fallback
                         two_theta = np.linspace(30, 130, 2000)
                         intensity = np.zeros_like(two_theta)
                         for _, pk in generate_theoretical_peaks("FCC-Co", wavelength, 30, 130).iterrows():
