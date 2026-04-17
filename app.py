@@ -2,7 +2,7 @@
 XRD Rietveld Analysis — Co-Cr Dental Alloy (Mediloy S Co, BEGO)
 ================================================================
 Publication-quality plots • Phase-specific markers • Optional GSAS-II integration
-8 samples: Cast / Printed (SLM) × Heat-treated / Not heat-treated × ψ=0° / 45°
+8 samples: SLM-Printed × Heat-treated / As-built × ψ=0° / 45°
 """
 
 import streamlit as st
@@ -28,18 +28,17 @@ except ImportError:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 SAMPLE_CATALOG = {
-    "CH0_1":   {"label": "Cast • HT • ψ=0°", "short": "C-HT-0°", "fabrication": "Cast", "treatment": "Heat-treated", "psi_angle": 0, "filename": "CH0_1.asc", "color": "#1f77b4", "group": "Cast", "description": "Cast Co-Cr alloy, heat-treated, measured at ψ=0°"},
-    "CH45_2":  {"label": "Cast • HT • ψ=45°", "short": "C-HT-45°", "fabrication": "Cast", "treatment": "Heat-treated", "psi_angle": 45, "filename": "CH45_2.asc", "color": "#aec7e8", "group": "Cast", "description": "Cast Co-Cr alloy, heat-treated, measured at ψ=45°"},
-    "CNH0_3":  {"label": "Cast • As-built • ψ=0°", "short": "C-AB-0°", "fabrication": "Cast", "treatment": "As-built", "psi_angle": 0, "filename": "CNH0_3.asc", "color": "#ff7f0e", "group": "Cast", "description": "Cast Co-Cr alloy, as-built (no HT), ψ=0°"},
-    "CNH45_4": {"label": "Cast • As-built • ψ=45°", "short": "C-AB-45°", "fabrication": "Cast", "treatment": "As-built", "psi_angle": 45, "filename": "CNH45_4.asc", "color": "#ffbb78", "group": "Cast", "description": "Cast Co-Cr alloy, as-built, ψ=45°"},
+    "CH0_1":   {"label": "Printed • HT • ψ=0°", "short": "P-HT-0°", "fabrication": "SLM", "treatment": "Heat-treated", "psi_angle": 0, "filename": "CH0_1.asc", "color": "#1f77b4", "group": "Printed", "description": "SLM-printed Co-Cr alloy, heat-treated, measured at ψ=0°"},
+    "CH45_2":  {"label": "Printed • HT • ψ=45°", "short": "P-HT-45°", "fabrication": "SLM", "treatment": "Heat-treated", "psi_angle": 45, "filename": "CH45_2.asc", "color": "#aec7e8", "group": "Printed", "description": "SLM-printed Co-Cr alloy, heat-treated, measured at ψ=45°"},
+    "CNH0_3":  {"label": "Printed • As-built • ψ=0°", "short": "P-AB-0°", "fabrication": "SLM", "treatment": "As-built", "psi_angle": 0, "filename": "CNH0_3.asc", "color": "#ff7f0e", "group": "Printed", "description": "SLM-printed Co-Cr alloy, as-built (no HT), ψ=0°"},
+    "CNH45_4": {"label": "Printed • As-built • ψ=45°", "short": "P-AB-45°", "fabrication": "SLM", "treatment": "As-built", "psi_angle": 45, "filename": "CNH45_4.asc", "color": "#ffbb78", "group": "Printed", "description": "SLM-printed Co-Cr alloy, as-built, ψ=45°"},
     "PH0_5":   {"label": "Printed • HT • ψ=0°", "short": "P-HT-0°", "fabrication": "SLM", "treatment": "Heat-treated", "psi_angle": 0, "filename": "PH0_5.asc", "color": "#2ca02c", "group": "Printed", "description": "SLM-printed Co-Cr alloy, heat-treated, ψ=0°"},
     "PH45_6":  {"label": "Printed • HT • ψ=45°", "short": "P-HT-45°", "fabrication": "SLM", "treatment": "Heat-treated", "psi_angle": 45, "filename": "PH45_6.asc", "color": "#98df8a", "group": "Printed", "description": "SLM-printed Co-Cr alloy, heat-treated, ψ=45°"},
     "PNH0_7":  {"label": "Printed • As-built • ψ=0°", "short": "P-AB-0°", "fabrication": "SLM", "treatment": "As-built", "psi_angle": 0, "filename": "PNH0_7.asc", "color": "#d62728", "group": "Printed", "description": "SLM-printed Co-Cr alloy, as-built, ψ=0°"},
     "PNH45_8": {"label": "Printed • As-built • ψ=45°", "short": "P-AB-45°", "fabrication": "SLM", "treatment": "As-built", "psi_angle": 45, "filename": "PNH45_8.asc", "color": "#ff9896", "group": "Printed", "description": "SLM-printed Co-Cr alloy, as-built, ψ=45°"},
 }
 SAMPLE_KEYS = list(SAMPLE_CATALOG.keys())
-GROUPS = {"Cast": [k for k,v in SAMPLE_CATALOG.items() if v["group"]=="Cast"],
-          "Printed": [k for k,v in SAMPLE_CATALOG.items() if v["group"]=="Printed"]}
+GROUPS = {"Printed": list(SAMPLE_CATALOG.keys())}
 
 PHASE_LIBRARY = {
     "FCC-Co": {
@@ -304,7 +303,7 @@ st.set_page_config(page_title="XRD Rietveld — Co-Cr Dental Alloy", page_icon="
 st.markdown("""
 <style>
   .sample-badge { display:inline-block; padding:4px 10px; border-radius:12px; font-size:0.82rem; font-weight:600; color:#fff; }
-  .cast-badge { background:#1f77b4; } .printed-badge { background:#2ca02c; }
+  .printed-badge { background:#2ca02c; }
   .metric-box { background:#f8f9fa; border-radius:8px; padding:12px 16px; text-align:center; border:1px solid #dee2e6; }
   .metric-box .value { font-size:1.6rem; font-weight:700; color:#1f77b4; }
   .metric-box .label { font-size:0.78rem; color:#6c757d; }
@@ -312,7 +311,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("⚙️ XRD Rietveld Refinement — Co-Cr Dental Alloy")
-st.caption("Mediloy S Co · BEGO · Co-Cr-Mo-W-Si · 8 samples: Cast/SLM × HT/AsBlt × ψ=0°/45°")
+st.caption("Mediloy S Co · BEGO · Co-Cr-Mo-W-Si · 8 samples: SLM-Printed × HT/AsBlt × ψ=0°/45°")
 
 # SIDEBAR
 with st.sidebar:
@@ -320,7 +319,7 @@ with st.sidebar:
     sample_options = {k: f"[{i+1}]  {SAMPLE_CATALOG[k]['label']}" for i, k in enumerate(SAMPLE_KEYS)}
     selected_key = st.selectbox("Active sample", options=SAMPLE_KEYS, format_func=lambda k: sample_options[k], index=0)
     meta = SAMPLE_CATALOG[selected_key]
-    badge_cls = "cast-badge" if meta["group"] == "Cast" else "printed-badge"
+    badge_cls = "printed-badge"
     st.markdown(f'<span class="sample-badge {badge_cls}">{meta["fabrication"]} · {meta["treatment"]} · ψ={meta["psi_angle"]}°</span>', unsafe_allow_html=True)
     st.caption(meta["description"])
     st.markdown("---")
@@ -393,7 +392,7 @@ all_data = load_all_demo()
 if uploaded:
     active_df_raw = parse_asc(uploaded.read())
     st.info(f"📌 Showing **{uploaded.name}** (custom upload)")
-elif selected_key in all_data:  # ✅ FIXED: was "all_"
+elif selected_key in all_data:
     active_df_raw = all_data[selected_key]
     st.info(f"📌 Sample **{selected_key}** — {meta['label']}")
 else:
@@ -531,7 +530,7 @@ with tabs[3]:
 # TAB 4 — SAMPLE COMPARISON
 with tabs[4]:
     st.subheader("Multi-Sample Comparison")
-    comp_mode = st.radio("View mode", ["Overlay patterns", "Cast vs Printed (groups)", "Heat-treated vs Not heat-treated", "ψ=0° vs ψ=45° (stress pairs)"], horizontal=True)
+    comp_mode = st.radio("View mode", ["Overlay patterns", "Groups comparison", "Heat-treated vs As-built", "ψ=0° vs ψ=45° (stress pairs)"], horizontal=True)
     comp_samples = st.multiselect("Select samples to overlay", options=SAMPLE_KEYS, default=SAMPLE_KEYS, format_func=lambda k: SAMPLE_CATALOG[k]["label"])
     normalise = st.checkbox("Normalise to max intensity", value=True)
     if not comp_samples:
@@ -543,7 +542,6 @@ with tabs[4]:
             for pair_i, (k0, k45) in enumerate(pairs):
                 for ki, k in enumerate([k0, k45]):
                     if k not in comp_samples: continue
-                    # ✅ FIXED: was "if k in all_"
                     df_s = all_data[k] if k in all_data else pd.DataFrame({"two_theta": np.linspace(30,130,2000), "intensity": np.random.normal(200,50,2000)})
                     I = df_s["intensity"].values
                     if normalise: I = (I - I.min()) / (I.max() - I.min() + 1e-8)
@@ -552,7 +550,6 @@ with tabs[4]:
             fig_cmp.update_layout(title="ψ=0° (solid) vs ψ=45° (dotted) — pairs offset vertically", xaxis_title="2θ (degrees)", yaxis_title="Norm. intensity + offset", template="plotly_white", height=520)
         else:
             for k in comp_samples:
-                # ✅ FIXED: was "if k in all_"
                 df_s = all_data[k] if k in all_data else pd.DataFrame({"two_theta": np.linspace(30,130,2000), "intensity": np.random.normal(200,50,2000)})
                 I = df_s["intensity"].values
                 if normalise: I = (I - I.min()) / (I.max() - I.min() + 1e-8)
