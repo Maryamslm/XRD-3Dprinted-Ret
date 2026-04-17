@@ -26,7 +26,7 @@ except ImportError:
     GSASII_AVAILABLE = False
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# INLINE UTILITIES
+# INLINE UTILITIES & CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
 
 SAMPLE_CATALOG = {
@@ -136,7 +136,6 @@ def parse_asc(raw_bytes: bytes) -> pd.DataFrame:
         line = line.strip()
         if not line or line.startswith("#") or line.startswith("!"):
             continue
-        # Skip header lines with non-numeric content
         parts = re.split(r'[\s,;]+', line)
         if len(parts) >= 2:
             try:
@@ -152,28 +151,18 @@ def parse_asc(raw_bytes: bytes) -> pd.DataFrame:
 
 @st.cache_data
 def parse_xrdml(raw_bytes: bytes) -> pd.DataFrame:
-    """
-    Parse PANalytical/X'Pert .xrdml XML format files.
-    Extracts 2θ and intensity from <xRayData> or <scan> elements.
-    """
+    """Parse PANalytical/X'Pert .xrdml XML format files."""
     try:
-        # Decode and parse XML
         text = raw_bytes.decode("utf-8", errors="replace")
-        # Remove XML namespace if present for easier parsing
         text_clean = re.sub(r'\sxmlns="[^"]+"', '', text, count=1)
         root = ET.fromstring(text_clean)
-        
-        # Try to find data in various possible locations
         data_points = []
         
-        # Method 1: Look for <xRayData> with <values> or <data>
         for elem in root.iter():
             if elem.tag.endswith('xRayData') or elem.tag == 'xRayData':
-                # Look for intensity values
                 values_elem = elem.find('.//values') or elem.find('.//data') or elem.find('.//intensities')
                 if values_elem is not None and values_elem.text:
                     intensities = [float(v) for v in values_elem.text.strip().split() if v.strip()]
-                    # Look for corresponding 2θ values
                     start = float(elem.get('startAngle', elem.get('start', 0)))
                     end = float(elem.get('endAngle', elem.get('end', 0)))
                     step = float(elem.get('step', elem.get('stepSize', 0.02)))
@@ -182,7 +171,6 @@ def parse_xrdml(raw_bytes: bytes) -> pd.DataFrame:
                         data_points = list(zip(two_theta, intensities))
                         break
         
-        # Method 2: Look for <scan> with <xRayData> children
         if not data_points:
             for scan in root.iter():
                 if scan.tag.endswith('scan') or scan.tag == 'scan':
@@ -190,64 +178,47 @@ def parse_xrdml(raw_bytes: bytes) -> pd.DataFrame:
                         if child.tag.endswith('xRayData') or child.tag == 'xRayData':
                             vals = child.text
                             if vals:
-                                # Parse alternating 2θ, intensity or just intensity with metadata
                                 nums = [float(v) for v in re.findall(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', vals)]
                                 if len(nums) >= 2 and len(nums) % 2 == 0:
                                     data_points = [(nums[i], nums[i+1]) for i in range(0, len(nums), 2)]
                                     break
                                 elif len(nums) > 10:
-                                    # Assume just intensities, generate 2θ from scan params
                                     start = float(scan.get('startAngle', scan.get('start', 0)))
                                     end = float(scan.get('endAngle', scan.get('end', 100)))
                                     two_theta = np.linspace(start, end, len(nums))
                                     data_points = list(zip(two_theta, nums))
                                     break
         
-        # Method 3: Fallback - search entire XML for numeric pairs
         if not data_points:
-            # Extract all numeric sequences
             all_nums = [float(m) for m in re.findall(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', text)]
-            # Heuristic: if we have many numbers, assume alternating 2θ, intensity
             if len(all_nums) >= 20 and len(all_nums) % 2 == 0:
                 data_points = [(all_nums[i], all_nums[i+1]) for i in range(0, len(all_nums), 2)]
         
         if not data_points:
-            st.warning("⚠️ Could not extract XRD data from .xrdml file. File structure may differ from expected format.")
             return pd.DataFrame(columns=["two_theta", "intensity"])
         
         df = pd.DataFrame(data_points, columns=["two_theta", "intensity"])
-        # Filter valid ranges
         df = df[(df["two_theta"] > 0) & (df["two_theta"] < 180) & (df["intensity"] >= 0)]
         if len(df) == 0:
             return pd.DataFrame(columns=["two_theta", "intensity"])
         return df.sort_values("two_theta").reset_index(drop=True)
-        
-    except ET.ParseError as e:
-        st.error(f"❌ XML parsing error: {e}")
-        return pd.DataFrame(columns=["two_theta", "intensity"])
     except Exception as e:
-        st.error(f"❌ Error parsing .xrdml file: {e}")
+        st.error(f"❌ Error parsing .xrdml: {e}")
         return pd.DataFrame(columns=["two_theta", "intensity"])
 
 @st.cache_data
 def parse_file(raw_bytes: bytes, filename: str) -> pd.DataFrame:
-    """Route to appropriate parser based on file extension"""
     ext = os.path.splitext(filename)[1].lower()
     if ext == '.xrdml':
         return parse_xrdml(raw_bytes)
-    else:  # .asc, .xy, .csv, .txt, .dat
-        return parse_asc(raw_bytes)
+    return parse_asc(raw_bytes)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # GITHUB INTEGRATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@st.cache_data(ttl=300)  # Cache for 5 minutes
+@st.cache_data(ttl=300)
 def fetch_github_files(repo: str, branch: str = "main", path: str = "") -> list:
-    """
-    Fetch file listing from a public GitHub repository using the GitHub API.
-    Returns list of dicts with filename, path, download_url, size, type.
-    """
     api_url = f"https://api.github.com/repos/{repo}/contents/{path}"
     params = {"ref": branch} if branch else {}
     try:
@@ -255,40 +226,27 @@ def fetch_github_files(repo: str, branch: str = "main", path: str = "") -> list:
         if response.status_code == 200:
             items = response.json()
             if isinstance(items, list):
-                # Filter for files with supported extensions
                 supported = ['.asc', '.xrdml', '.xy', '.csv', '.txt', '.dat']
                 return [
-                    {
-                        "name": item["name"],
-                        "path": item["path"],
-                        "download_url": item.get("download_url"),
-                        "size": item.get("size", 0),
-                        "type": item.get("type", "file")
-                    }
-                    for item in items
-                    if item.get("type") == "file" and any(item["name"].lower().endswith(ext) for ext in supported)
+                    {"name": item["name"], "path": item["path"], "download_url": item.get("download_url"), "size": item.get("size", 0)}
+                    for item in items if item.get("type") == "file" and any(item["name"].lower().endswith(ext) for ext in supported)
                 ]
             return []
-        else:
-            st.warning(f"⚠️ GitHub API returned status {response.status_code}")
-            return []
-    except requests.RequestException as e:
-        st.warning(f"⚠️ Could not fetch GitHub files: {e}")
+        return []
+    except Exception as e:
+        st.warning(f"⚠️ GitHub fetch error: {e}")
         return []
 
 @st.cache_data(ttl=600)
 def download_github_file(url: str) -> bytes:
-    """Download file content from GitHub raw URL"""
     try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        return response.content
-    except requests.RequestException as e:
-        st.error(f"❌ Failed to download file: {e}")
+        return requests.get(url, timeout=30).content
+    except Exception as e:
+        st.error(f"❌ Download failed: {e}")
         return b""
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# RIETVELD CLASSES & FUNCTIONS (unchanged from original)
+# RIETVELD ENGINE
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class RietveldRefinement:
@@ -484,7 +442,22 @@ st.markdown("""
 st.title("⚙️ XRD Rietveld Refinement — Co-Cr Dental Alloy")
 st.caption("Mediloy S Co · BEGO · Co-Cr-Mo-W-Si · SLM-Printed × HT/AsBlt × ψ=0°/45° • Supports .asc & .xrdml")
 
-# SIDEBAR
+# ──────────────────────────────────────────────────────────────────────────────
+# DATA LOADING (FIXED SCOPE FOR all_data)
+# ──────────────────────────────────────────────────────────────────────────────
+@st.cache_data
+def load_all_demo() -> dict:
+    out = {}
+    for k, m in SAMPLE_CATALOG.items():
+        path = os.path.join(DEMO_DIR, m["filename"])
+        if os.path.exists(path):
+            with open(path, "rb") as f: out[k] = parse_asc(f.read())
+    return out
+
+# ALWAYS defined to prevent NameError in comparison tab
+all_data = load_all_demo()
+active_df_raw = None
+
 with st.sidebar:
     st.header("🔭 Sample Selection")
     sample_options = {k: f"[{i+1}]  {SAMPLE_CATALOG[k]['label']}" for i, k in enumerate(SAMPLE_KEYS)}
@@ -498,16 +471,19 @@ with st.sidebar:
     st.subheader("📂 Data Source")
     source_option = st.radio("Choose data source", ["Demo samples", "Upload file", "GitHub repository"], index=0)
     
-    active_df_raw = None
-    source_info = ""
-    
-    if source_option == "Upload file":
+    if source_option == "Demo samples":
+        if selected_key in all_data:
+            active_df_raw = all_data[selected_key]
+            st.success(f"📌 Sample **{selected_key}** — {meta['label']}")
+        else:
+            st.warning("⚠️ Local demo file missing. Will use synthetic fallback.")
+            
+    elif source_option == "Upload file":
         uploaded = st.file_uploader("Upload .asc or .xrdml file", type=["asc", "xrdml", "xy", "csv", "txt", "dat"], help="Two-column text or PANalytical .xrdml XML")
         if uploaded:
             active_df_raw = parse_file(uploaded.read(), uploaded.name)
-            source_info = f"📌 Showing **{uploaded.name}** ({len(active_df_raw):,} points)"
-            st.success(source_info)
-    
+            st.success(f"📌 Loaded **{uploaded.name}** ({len(active_df_raw):,} points)")
+            
     elif source_option == "GitHub repository":
         st.markdown("### 🔗 GitHub Settings")
         gh_repo = st.text_input("Repository (owner/repo)", value="your-username/xrd-data", help="e.g., bego-mediloy/xrd-patterns")
@@ -533,36 +509,23 @@ with st.sidebar:
                         content = download_github_file(file_info["download_url"])
                         if content:
                             active_df_raw = parse_file(content, selected_gh_file)
-                            source_info = f"📌 Loaded **{selected_gh_file}** from GitHub ({len(active_df_raw):,} points)"
-                            st.success(source_info)
+                            st.success(f"📌 Loaded **{selected_gh_file}** from GitHub ({len(active_df_raw):,} points)")
                 else:
-                    st.error("❌ No download URL available for this file")
-    
-    else:  # Demo samples
-        @st.cache_data
-        def load_all_demo() -> dict:
-            out = {}
-            for k, m in SAMPLE_CATALOG.items():
-                path = os.path.join(DEMO_DIR, m["filename"])
-                if os.path.exists(path):
-                    with open(path, "rb") as f: out[k] = parse_asc(f.read())
-            return out
-        all_data = load_all_demo()
-        if selected_key in all_data:
-            active_df_raw = all_data[selected_key]
-            source_info = f"📌 Sample **{selected_key}** — {meta['label']}"
-    
+                    st.error("❌ No download URL available")
+
     # Fallback synthetic data if nothing loaded
     if active_df_raw is None or len(active_df_raw) == 0:
-        st.warning("⚠️ No data loaded. Generating synthetic XRD pattern for demonstration.")
         two_theta = np.linspace(30, 130, 2000)
         intensity = np.zeros_like(two_theta)
         for _, pk in generate_theoretical_peaks("FCC-Co", 1.5406, 30, 130).iterrows():
             intensity += 5000 * np.exp(-((two_theta - pk["two_theta"])/0.8)**2)
         intensity += np.random.normal(0, 50, size=len(two_theta)) + 200
         active_df_raw = pd.DataFrame({"two_theta": two_theta, "intensity": intensity})
-        source_info = "📌 Using synthetic demo data"
-    
+        if source_option == "Demo samples":
+            st.info("📌 Using synthetic demo data (no local files found)")
+        else:
+            st.warning("⚠️ Generating synthetic XRD pattern for demonstration.")
+
     st.markdown("---")
     st.subheader("🔬 Instrument")
     wavelength = st.number_input("λ (Å)", value=1.5406, min_value=0.5, max_value=2.5, step=0.0001, format="%.4f", help="Cu Kα₁ = 1.5406 Å")
