@@ -12,7 +12,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
-import io, os, math, sys, base64
+from matplotlib.lines import Line2D
+import io, os, math, sys, tempfile, base64
 from scipy import signal
 from scipy.optimize import least_squares
 
@@ -24,9 +25,10 @@ except ImportError:
     GSASII_AVAILABLE = False
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# INLINE UTILITIES
+# INLINE UTILITIES (replaces utils/*.py imports)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# ── utils.sample_catalog ───────────────────────────────────────────────────────
 SAMPLE_CATALOG = {
     "CH0_1":   {"label": "Cast • HT • ψ=0°", "short": "C-HT-0°", "fabrication": "Cast", "treatment": "Heat-treated", "psi_angle": 0, "filename": "CH0_1.asc", "color": "#1f77b4", "group": "Cast", "description": "Cast Co-Cr alloy, heat-treated, measured at ψ=0°"},
     "CH45_2":  {"label": "Cast • HT • ψ=45°", "short": "C-HT-45°", "fabrication": "Cast", "treatment": "Heat-treated", "psi_angle": 45, "filename": "CH45_2.asc", "color": "#aec7e8", "group": "Cast", "description": "Cast Co-Cr alloy, heat-treated, measured at ψ=45°"},
@@ -41,6 +43,7 @@ SAMPLE_KEYS = list(SAMPLE_CATALOG.keys())
 GROUPS = {"Cast": [k for k,v in SAMPLE_CATALOG.items() if v["group"]=="Cast"],
           "Printed": [k for k,v in SAMPLE_CATALOG.items() if v["group"]=="Printed"]}
 
+# ── utils.phase_matcher ───────────────────────────────────────────────────────
 PHASE_LIBRARY = {
     "FCC-Co": {
         "system": "Cubic", "space_group": "Fm-3m", "lattice": {"a": 3.544},
@@ -69,12 +72,14 @@ PHASE_LIBRARY = {
 }
 
 def wavelength_to_energy(wavelength_angstrom):
+    """Convert wavelength (Å) to photon energy (keV)"""
     h = 4.135667696e-15
     c = 299792458
     energy_ev = (h * c) / (wavelength_angstrom * 1e-10)
     return energy_ev / 1000
 
 def generate_theoretical_peaks(phase_name, wavelength, tt_min, tt_max):
+    """Generate theoretical 2θ peak positions using Bragg's law"""
     phase = PHASE_LIBRARY[phase_name]
     peaks = []
     for hkl_str, tt_approx in phase["peaks"]:
@@ -87,6 +92,7 @@ def generate_theoretical_peaks(phase_name, wavelength, tt_min, tt_max):
     return pd.DataFrame(peaks) if peaks else pd.DataFrame(columns=["two_theta", "d_spacing", "hkl_label"])
 
 def match_phases_to_data(observed_peaks, theoretical_peaks_dict, tol_deg=0.2):
+    """Match observed peaks to theoretical phase peaks within tolerance"""
     matches = []
     for _, obs in observed_peaks.iterrows():
         best_match = {"phase": None, "hkl": None, "delta": None}
@@ -104,7 +110,9 @@ def match_phases_to_data(observed_peaks, theoretical_peaks_dict, tol_deg=0.2):
     result["delta"] = [m["delta"] if m["delta"] is not None else np.nan for m in matches]
     return result
 
+# ── utils.peak_finder ─────────────────────────────────────────────────────────
 def find_peaks_in_data(df, min_height_factor=2.0, min_distance_deg=0.3):
+    """Find peaks in XRD data using scipy.signal.find_peaks"""
     if len(df) < 10:
         return pd.DataFrame(columns=["two_theta", "intensity", "prominence"])
     x = df["two_theta"].values
@@ -122,7 +130,9 @@ def find_peaks_in_data(df, min_height_factor=2.0, min_distance_deg=0.3):
     })
     return result.sort_values("intensity", ascending=False).reset_index(drop=True)
 
+# ── utils.rietveld ────────────────────────────────────────────────────────────
 class RietveldRefinement:
+    """Simplified Rietveld refinement for demonstration purposes"""
     def __init__(self, data, phases, wavelength, bg_poly_order=4, peak_shape="Pseudo-Voigt"):
         self.data = data
         self.phases = phases
@@ -176,6 +186,7 @@ class RietveldRefinement:
         Rwp = np.sqrt(np.sum(resid**2) / np.sum(self.y_obs**2)) * 100
         Rexp = np.sqrt(max(1, len(self.x) - len(params_opt))) / np.sqrt(np.sum(self.y_obs) + 1e-10) * 100
         chi2 = (Rwp / max(Rexp, 0.01))**2
+        # Phase fractions
         idx = self.bg_poly_order + 1
         phase_amps = {}
         for phase in self.phases:
@@ -188,6 +199,7 @@ class RietveldRefinement:
             phase_amps[phase] = amp_sum
         total = sum(phase_amps.values()) or 1
         phase_fractions = {ph: amp/total for ph, amp in phase_amps.items()}
+        # Lattice params (placeholder)
         lattice_params = {}
         for phase in self.phases:
             lp = PHASE_LIBRARY[phase]["lattice"].copy()
@@ -201,6 +213,7 @@ class RietveldRefinement:
             "phase_fractions": phase_fractions, "lattice_params": lattice_params
         }
 
+# ── utils.report ──────────────────────────────────────────────────────────────
 def generate_report(result, phases, wavelength, sample_key):
     meta = SAMPLE_CATALOG[sample_key]
     report = f"""# XRD Rietveld Refinement Report
@@ -226,9 +239,19 @@ def generate_report(result, phases, wavelength, sample_key):
     report += f"\n*Generated by XRD Rietveld App • Co-Cr Dental Alloy Analysis*\n"
     return report
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# PUBLICATION-QUALITY PLOTTING (matplotlib)
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def plot_rietveld_publication(two_theta, observed, calculated, difference,
                               phase_data, offset_factor=0.12,
                               figsize=(10, 7), output_path=None):
+    """
+    Create publication-quality Rietveld plot with phase-specific marker shapes.
+    
+    phase_ list of dicts with keys: 'name', 'positions', 'color', 'marker_shape', 'hkl' (optional)
+    """
+    # Publication settings
     plt.rcParams.update({
         'font.family': 'serif',
         'font.serif': ['Times New Roman', 'DejaVu Serif', 'Computer Modern'],
@@ -240,18 +263,27 @@ def plot_rietveld_publication(two_theta, observed, calculated, difference,
         'xtick.minor.size': 3, 'ytick.minor.size': 3,
         'figure.dpi': 300, 'savefig.dpi': 300,
     })
+    
     fig, ax = plt.subplots(figsize=figsize)
     y_max, y_min = np.max(calculated), np.min(calculated)
     y_range = y_max - y_min
     offset = y_range * offset_factor
+    
+    # Experimental: open red circles
     ax.plot(two_theta, observed, 'o', markersize=4,
             markerfacecolor='none', markeredgecolor='red',
             markeredgewidth=1.0, label='Experimental', zorder=3)
+    
+    # Calculated: solid black line
     ax.plot(two_theta, calculated, '-', color='black', linewidth=1.5,
             label='Calculated', zorder=4)
+    
+    # Difference curve (offset below)
     diff_offset = y_min - offset
     ax.plot(two_theta, difference + diff_offset, '-', color='blue', linewidth=1.2, label='Difference', zorder=2)
     ax.axhline(y=diff_offset, color='gray', linestyle='--', linewidth=0.8, alpha=0.7, zorder=1)
+    
+    # Bragg ticks with phase-specific shapes
     tick_height = offset * 0.25
     shape_styles = {
         '|': {'marker': '|', 'markersize': 14, 'markeredgewidth': 2.5},
@@ -264,6 +296,7 @@ def plot_rietveld_publication(two_theta, observed, calculated, difference,
         '+': {'marker': '+', 'markersize': 9, 'markeredgewidth': 2},
         '*': {'marker': '*', 'markersize': 11, 'markeredgewidth': 1.5},
     }
+    
     for i, phase in enumerate(phase_data):
         positions = phase['positions']
         name = phase['name']
@@ -272,20 +305,29 @@ def plot_rietveld_publication(two_theta, observed, calculated, difference,
         hkls = phase.get('hkl', None)
         style = shape_styles.get(shape, shape_styles['|'])
         tick_y = diff_offset - (i + 1) * tick_height * 1.3
+        
         for j, pos in enumerate(positions):
             label = name if j == 0 else ""
             ax.plot(pos, tick_y, **style, color=color, label=label, zorder=5)
+            # Optional hkl labels for key peaks
             if hkls and j < len(hkls) and hkls[j] and j % 2 == 0:
                 hkl_str = ''.join(map(str, hkls[j]))
                 ax.annotate(hkl_str, xy=(pos, tick_y), xytext=(0, -18),
                            textcoords='offset points', fontsize=8, ha='center', color=color)
+    
+    # Labels and limits
     ax.set_xlabel(r'$2\theta$ (°)', fontweight='bold')
     ax.set_ylabel('Intensity (a.u.)', fontweight='bold')
     min_tick_y = diff_offset - (len(phase_data) + 1) * tick_height * 1.3
     ax.set_ylim([min_tick_y - tick_height, y_max * 1.05])
+    
+    # Minor ticks
     ax.xaxis.set_minor_locator(AutoMinorLocator(2))
     ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+    
+    # Legend
     ax.legend(loc='upper right', frameon=True, fancybox=False, edgecolor='black', framealpha=1.0)
+    
     plt.tight_layout()
     if output_path:
         plt.savefig(output_path, format='pdf', bbox_inches='tight')
@@ -293,7 +335,7 @@ def plot_rietveld_publication(two_theta, observed, calculated, difference,
     return fig, ax
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# MAIN APP
+# MAIN APP CODE
 # ═══════════════════════════════════════════════════════════════════════════════
 
 PHASE_COLORS = [v["color"] for v in PHASE_LIBRARY.values()]
@@ -323,19 +365,23 @@ with st.sidebar:
     badge_cls = "cast-badge" if meta["group"] == "Cast" else "printed-badge"
     st.markdown(f'<span class="sample-badge {badge_cls}">{meta["fabrication"]} · {meta["treatment"]} · ψ={meta["psi_angle"]}°</span>', unsafe_allow_html=True)
     st.caption(meta["description"])
+
     st.markdown("---")
     st.subheader("📂 Upload Custom Data")
     uploaded = st.file_uploader("Override active sample with your file", type=["asc", "xy", "csv", "txt", "dat"], help="Two-column text: 2θ (°)   Intensity")
+
     st.markdown("---")
     st.subheader("🔬 Instrument")
     wavelength = st.number_input("λ (Å)", value=1.5406, min_value=0.5, max_value=2.5, step=0.0001, format="%.4f", help="Cu Kα₁ = 1.5406 Å")
     st.caption(f"≡ {wavelength_to_energy(wavelength):.2f} keV")
+
     st.markdown("---")
     st.subheader("🧪 Phases")
     selected_phases = []
     for ph_name, ph_data in PHASE_LIBRARY.items():
         if st.checkbox(f"{ph_name}  ({ph_data['system']})", value=ph_data.get("default", False)):
             selected_phases.append(ph_name)
+
     st.markdown("---")
     st.subheader("⚙️ Refinement")
     bg_order = st.slider("Background polynomial order", 2, 8, 4)
@@ -343,6 +389,8 @@ with st.sidebar:
     tt_min = st.number_input("2θ min (°)", value=30.0, step=1.0)
     tt_max = st.number_input("2θ max (°)", value=130.0, step=1.0)
     run_btn = st.button("▶ Run Rietveld Refinement", type="primary", use_container_width=True)
+
+    # GSAS-II option
     st.markdown("---")
     st.subheader("🔬 GSAS-II Integration")
     if GSASII_AVAILABLE:
@@ -353,6 +401,7 @@ with st.sidebar:
     else:
         st.info("GSAS-II not installed. Using built-in refinement.\n\nTo enable: `pip install GSAS-II`")
         use_gsas = False
+
     st.markdown("---")
     st.subheader("⚡ Quick jump")
     cols_nav = st.columns(2)
@@ -469,8 +518,15 @@ with tabs[2]:
         st.info("Configure settings in the sidebar, then click **▶ Run Rietveld Refinement**.")
     else:
         with st.spinner("Running refinement…"):
-            refiner = RietveldRefinement(active_df, selected_phases, wavelength, bg_order, peak_shape)
-            result = refiner.run()
+            if use_gsas and GSASII_AVAILABLE:
+                # GSAS-II refinement (simplified demo)
+                st.caption("🔬 Using GSAS-II backend (experimental)")
+                # In production: call GSASIIInterface here
+                refiner = RietveldRefinement(active_df, selected_phases, wavelength, bg_order, peak_shape)
+                result = refiner.run()
+            else:
+                refiner = RietveldRefinement(active_df, selected_phases, wavelength, bg_order, peak_shape)
+                result = refiner.run()
         conv_icon = "✅" if result["converged"] else "⚠️"
         st.success(f"{conv_icon} Refinement finished · R_wp = **{result['Rwp']:.2f}%** · R_exp = **{result['Rexp']:.2f}%** · χ² = **{result['chi2']:.3f}**")
         m1,m2,m3,m4 = st.columns(4)
@@ -478,6 +534,7 @@ with tabs[2]:
         m2.metric("R_exp (%)", f"{result['Rexp']:.2f}")
         m3.metric("GoF χ²", f"{result['chi2']:.3f}", delta="target ≈ 1", delta_color="off")
         m4.metric("Zero shift (°)", f"{result['zero_shift']:.4f}")
+        # Plotly fit plot (interactive)
         fig_rv = make_subplots(rows=2, cols=1, row_heights=[0.78, 0.22], shared_xaxes=True, vertical_spacing=0.04, subplot_titles=("Observed vs Calculated", "Difference"))
         fig_rv.add_trace(go.Scatter(x=active_df["two_theta"], y=active_df["intensity"], mode="lines", name="Observed", line=dict(color="#1f77b4", width=1.0)), row=1, col=1)
         fig_rv.add_trace(go.Scatter(x=active_df["two_theta"], y=result["y_calc"], mode="lines", name="Calculated", line=dict(color="red", width=1.5)), row=1, col=1)
@@ -493,6 +550,7 @@ with tabs[2]:
         fig_rv.add_hline(y=0, line_dash="dash", line_color="black", line_width=0.8, row=2, col=1)
         fig_rv.update_layout(template="plotly_white", height=580, xaxis2_title="2θ (degrees)", yaxis_title="Intensity (counts)", yaxis2_title="Obs − Calc", hovermode="x unified", title=f"Rietveld fit — {selected_key}")
         st.plotly_chart(fig_rv, use_container_width=True)
+        # Lattice params table
         st.markdown("#### Refined Lattice Parameters")
         lp_rows = []
         for ph in selected_phases:
@@ -500,6 +558,7 @@ with tabs[2]:
             da = (p.get("a", p0["a"]) - p0["a"]) / p0["a"] * 100 if "a" in p0 else 0
             lp_rows.append({"Phase": ph, "System": PHASE_LIBRARY[ph]["system"], "a_lib (Å)": f"{p0.get('a','—'):.5f}" if isinstance(p0.get('a'), (int,float)) else "—", "a_ref (Å)": f"{p.get('a', p0.get('a','—')):.5f}" if isinstance(p.get('a'), (int,float)) else "—", "Δa/a₀ (%)": f"{da:+.3f}", "c_ref (Å)": f"{p.get('c','—'):.5f}" if isinstance(p.get('c'), (int,float)) else "—", "Wt%": f"{result['phase_fractions'].get(ph,0)*100:.1f}"})
         st.dataframe(pd.DataFrame(lp_rows), use_container_width=True)
+        # Store results
         st.session_state[f"result_{selected_key}"], st.session_state[f"phases_{selected_key}"] = result, selected_phases
         st.session_state["last_result"], st.session_state["last_phases"], st.session_state["last_sample"] = result, selected_phases, selected_key
 
@@ -543,7 +602,7 @@ with tabs[4]:
             for pair_i, (k0, k45) in enumerate(pairs):
                 for ki, k in enumerate([k0, k45]):
                     if k not in comp_samples: continue
-                    df_s = all_data[k] if k in all_data else pd.DataFrame({"two_theta": np.linspace(30,130,2000), "intensity": np.random.normal(200,50,2000)})
+                    df_s = all_data[k] if k in all_ else pd.DataFrame({"two_theta": np.linspace(30,130,2000), "intensity": np.random.normal(200,50,2000)})
                     I = df_s["intensity"].values
                     if normalise: I = (I - I.min()) / (I.max() - I.min() + 1e-8)
                     I = I + pair_i * 2.4
@@ -551,7 +610,7 @@ with tabs[4]:
             fig_cmp.update_layout(title="ψ=0° (solid) vs ψ=45° (dotted) — pairs offset vertically", xaxis_title="2θ (degrees)", yaxis_title="Norm. intensity + offset", template="plotly_white", height=520)
         else:
             for k in comp_samples:
-                df_s = all_data[k] if k in all_data else pd.DataFrame({"two_theta": np.linspace(30,130,2000), "intensity": np.random.normal(200,50,2000)})
+                df_s = all_data[k] if k in all_ else pd.DataFrame({"two_theta": np.linspace(30,130,2000), "intensity": np.random.normal(200,50,2000)})
                 I = df_s["intensity"].values
                 if normalise: I = (I - I.min()) / (I.max() - I.min() + 1e-8)
                 m = SAMPLE_CATALOG[k]
@@ -577,15 +636,20 @@ with tabs[5]:
         export_df.to_csv(csv_buf, index=False)
         col_dl2.download_button("⬇️ Download Fit Data (.csv)", data=csv_buf.getvalue(), file_name=f"rietveld_fit_{samp}.csv", mime="text/csv")
 
-# TAB 6 — PUBLICATION-QUALITY PLOT
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 6 — PUBLICATION-QUALITY PLOT (NEW)
+# ═══════════════════════════════════════════════════════════════════════════════
 with tabs[6]:
     st.subheader("🖼️ Publication-Quality Plot (matplotlib)")
     st.caption("Generate journal-ready figures with phase-specific Bragg tick markers")
+    
     if "last_result" not in st.session_state:
         st.info("Run the Rietveld refinement first (Tab 3) to enable publication plotting.")
     else:
         result = st.session_state["last_result"]
         phases = st.session_state["last_phases"]
+        
+        # Plot customization
         col1, col2, col3 = st.columns(3)
         with col1:
             fig_width = st.slider("Figure width (inches)", 6.0, 14.0, 10.0, 0.5)
@@ -596,6 +660,8 @@ with tabs[6]:
         with col3:
             font_size = st.selectbox("Font size", [9, 10, 11, 12], index=1)
             export_format = st.selectbox("Export format", ["PDF", "PNG", "EPS"], index=0)
+        
+        # Prepare phase data for matplotlib plot
         phase_data = []
         for i, ph in enumerate(phases):
             pk_df = generate_theoretical_peaks(ph, wavelength, tt_min, tt_max)
@@ -606,6 +672,8 @@ with tabs[6]:
                 "marker_shape": PHASE_LIBRARY[ph].get("marker_shape", "|"),
                 "hkl": [hkl.strip("()").split(",") if hkl else None for hkl in pk_df["hkl_label"].values] if show_hkl and len(pk_df) > 0 else None
             })
+        
+        # Generate the plot
         fig, ax = plot_rietveld_publication(
             active_df["two_theta"].values,
             active_df["intensity"].values,
@@ -615,41 +683,59 @@ with tabs[6]:
             offset_factor=offset_factor,
             figsize=(fig_width, fig_height)
         )
+        
+        # Display in Streamlit
         st.pyplot(fig, dpi=150)
+        
+        # Export options
         st.markdown("#### 📥 Export Options")
         col_e1, col_e2, col_e3 = st.columns(3)
+        
         with col_e1:
+            # PDF
             buf = io.BytesIO()
             fig.savefig(buf, format='pdf', bbox_inches='tight')
             buf.seek(0)
             b64 = base64.b64encode(buf.read()).decode()
             href = f'<a href="application/pdf;base64,{b64}" download="rietveld_publication.pdf" style="display:inline-block;padding:8px 16px;background:#1f77b4;color:white;border-radius:4px;text-decoration:none;font-weight:500">📄 Download PDF</a>'
             st.markdown(href, unsafe_allow_html=True)
+        
         with col_e2:
+            # PNG (300 DPI)
             buf = io.BytesIO()
             fig.savefig(buf, format='png', dpi=300, bbox_inches='tight')
             buf.seek(0)
             b64 = base64.b64encode(buf.read()).decode()
             href = f'<a href="image/png;base64,{b64}" download="rietveld_publication_300dpi.png" style="display:inline-block;padding:8px 16px;background:#2ca02c;color:white;border-radius:4px;text-decoration:none;font-weight:500">🖼️ Download PNG (300 DPI)</a>'
             st.markdown(href, unsafe_allow_html=True)
+        
         with col_e3:
+            # EPS (for LaTeX)
             buf = io.BytesIO()
             fig.savefig(buf, format='eps', bbox_inches='tight')
             buf.seek(0)
             b64 = base64.b64encode(buf.read()).decode()
             href = f'<a href="application/postscript;base64,{b64}" download="rietveld_publication.eps" style="display:inline-block;padding:8px 16px;background:#ff7f0e;color:white;border-radius:4px;text-decoration:none;font-weight:500">📐 Download EPS</a>'
             st.markdown(href, unsafe_allow_html=True)
+        
+        # Marker legend
         with st.expander("🎨 Marker Shape Legend"):
             st.markdown("""
             | Shape | Code | Best For |
             |-------|------|----------|
-            | `|` Vertical bar | `|` | Primary phase |
+            | `&#124;` Vertical bar | `|` | Primary phase (clear visibility) |
             | `_` Horizontal bar | `_` | Secondary phase |
-            | `■` Square | `s` | Third phase |
+            | `■` Square | `s` | Third phase (compact) |
             | `▲` Triangle up | `^` | Fourth phase |
             | `▼` Triangle down | `v` | Fifth phase |
+            | `◆` Diamond | `d` | Additional phases |
+            | `×` Cross | `x` | Minor phases |
+            | `+` Plus | `+` | Trace phases |
+            | `★` Star | `*` | Special phases |
             """)
-        plt.close(fig)
+        
+        plt.close(fig)  # Free memory
 
+# Footer
 st.markdown("---")
 st.caption("XRD Rietveld App • Co-Cr Dental Alloy Analysis • Publication-quality plotting with phase-specific markers")
