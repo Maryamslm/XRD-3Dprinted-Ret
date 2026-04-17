@@ -393,7 +393,7 @@ all_data = load_all_demo()
 if uploaded:
     active_df_raw = parse_asc(uploaded.read())
     st.info(f"📌 Showing **{uploaded.name}** (custom upload)")
-elif selected_key in all_
+elif selected_key in all_data:  # ✅ FIXED: was "all_"
     active_df_raw = all_data[selected_key]
     st.info(f"📌 Sample **{selected_key}** — {meta['label']}")
 else:
@@ -543,6 +543,7 @@ with tabs[4]:
             for pair_i, (k0, k45) in enumerate(pairs):
                 for ki, k in enumerate([k0, k45]):
                     if k not in comp_samples: continue
+                    # ✅ FIXED: was "if k in all_"
                     df_s = all_data[k] if k in all_data else pd.DataFrame({"two_theta": np.linspace(30,130,2000), "intensity": np.random.normal(200,50,2000)})
                     I = df_s["intensity"].values
                     if normalise: I = (I - I.min()) / (I.max() - I.min() + 1e-8)
@@ -551,6 +552,7 @@ with tabs[4]:
             fig_cmp.update_layout(title="ψ=0° (solid) vs ψ=45° (dotted) — pairs offset vertically", xaxis_title="2θ (degrees)", yaxis_title="Norm. intensity + offset", template="plotly_white", height=520)
         else:
             for k in comp_samples:
+                # ✅ FIXED: was "if k in all_"
                 df_s = all_data[k] if k in all_data else pd.DataFrame({"two_theta": np.linspace(30,130,2000), "intensity": np.random.normal(200,50,2000)})
                 I = df_s["intensity"].values
                 if normalise: I = (I - I.min()) / (I.max() - I.min() + 1e-8)
