@@ -167,7 +167,7 @@ def parse_xrdml(raw_bytes: bytes) -> pd.DataFrame:
     try:
         text = raw_bytes.decode("utf-8", errors="replace")
         # Remove namespace for easier parsing
-        text_clean = re.sub(r'\s*xmlns="[^"]+"', '', text, count=1)
+        text_clean = re.sub(r'\sxmlns="[^"]+"', '', text, count=1)
         root = ET.fromstring(text_clean)
         
         for elem in root.iter():
