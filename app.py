@@ -172,7 +172,8 @@ def parse_cif_content(cif_text: str) -> dict:
             else: result[key] = match.group(1).strip()
     return result
 
-def generate_peaks_from_cif(cif_ dict, wavelength: float, tt_min: float, tt_max: float) -> pd.DataFrame:
+# 🔧 FIXED: Parameter name was "cif_ dict" → now "cif_data: dict"
+def generate_peaks_from_cif(cif_data: dict, wavelength: float, tt_min: float, tt_max: float) -> pd.DataFrame:
     LAMBDA_REF = 1.5406
     sg = cif_data.get("space_group_hm", "")
     a = cif_data["cell_params"].get("length_a", 3.544)
