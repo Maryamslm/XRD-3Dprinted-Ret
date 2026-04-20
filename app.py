@@ -312,7 +312,7 @@ def parse_file(raw_bytes: bytes, filename: str) -> pd.DataFrame:
     return parse_xrdml(raw_bytes) if filename.lower().endswith('.xrdml') else parse_asc(raw_bytes)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# GITHUB INTEGRATION
+# GITHUB INTEGRATION (IMPROVED & RATE-LIMIT RESILIENT)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @st.cache_data(ttl=300)
@@ -324,22 +324,18 @@ def fetch_github_files(repo: str, branch: str = "main", path: str = "") -> list:
             return [{"name": i["name"], "path": i["path"], "download_url": i.get("download_url"), "size": i.get("size", 0)} for i in response.json() if i.get("type") == "file" and any(i["name"].lower().endswith(ext) for ext in supported)]
         return []
     except Exception as e:
-        st.warning(f"⚠️ GitHub fetch error: {e}")
+        st.warning(f"⚠️ GitHub API fetch failed: {e}. Try the 'Direct Upload' or 'Raw URL' option below.")
         return []
 
 @st.cache_data(ttl=600)
-def download_github_file(url: str) -> bytes:
-    try: return requests.get(url, timeout=30).content
+def download_file_from_url(url: str) -> bytes:
+    try: 
+        resp = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        return resp.content
     except Exception as e:
         st.error(f"❌ Download failed: {e}")
         return b""
-
-@st.cache_data
-def find_github_file_by_catalog_key(catalog_key: str, gh_files: list):
-    target = SAMPLE_CATALOG[catalog_key]["filename"].upper()
-    for f in gh_files:
-        if f["name"].upper() == target: return f
-    return None
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ✅ IMPROVED RIETVELD ENGINE WITH PEAK DECONVOLUTION
@@ -671,14 +667,10 @@ with st.sidebar:
     st.caption(meta["description"])
     st.markdown("---")
     st.subheader("📂 Data Source")
-    source_option = st.radio("Choose data source", ["Demo samples", "Upload file", "GitHub repository", "GitHub Samples (Pre-loaded)"], index=3)
-    if source_option == "Demo samples":
-        if selected_key in all_data:
-            active_df_raw = all_data[selected_key]
-            st.success(f"📌 Sample **{selected_key}** — {meta['label']}")
-        else: st.warning("⚠️ Local demo file missing. Will use synthetic fallback.")
-    elif source_option == "Upload file":
-        uploaded = st.file_uploader("Upload .asc, .ASC, .xrdml or .cif file", type=["asc", "ASC", "xrdml", "XRDML", "xy", "csv", "txt", "dat", "cif", "CIF"], help="Two-column text, PANalytical .xrdml XML, or CIF crystal structure")
+    source_option = st.radio("Choose data source", ["📤 Direct Upload (Recommended)", "🔗 Raw GitHub URL", "📦 GitHub Samples (Pre-loaded)", "Demo samples"], index=0)
+    
+    if source_option == "📤 Direct Upload (Recommended)":
+        uploaded = st.file_uploader("Upload .asc, .ASC, .xrdml or .cif file", type=["asc", "ASC", "xrdml", "XRDML", "xy", "csv", "txt", "dat", "cif", "CIF"], help="Works 100% of the time. Bypasses GitHub API limits.")
         if uploaded:
             if uploaded.name.lower().endswith('.cif'):
                 cif_text = uploaded.read().decode("utf-8", errors="replace")
@@ -695,53 +687,66 @@ with st.sidebar:
             else:
                 active_df_raw = parse_file(uploaded.read(), uploaded.name)
                 st.success(f"📌 Loaded **{uploaded.name}** ({len(active_df_raw):,} points)")
-    elif source_option == "GitHub repository":
-        st.markdown("### 🔗 GitHub Settings")
-        gh_repo = st.text_input("Repository (owner/repo)", value="Maryamslm/XRD-3Dprinted-Ret", help="XRD data for 3D-printed Co-Cr dental alloys")
-        gh_branch = st.text_input("Branch", value="main")
-        gh_path = st.text_input("Subfolder path", value="SAMPLES", help="Folder containing .ASC/.xrdml files")
-        if st.button("🔍 Fetch Files", type="secondary"):
-            with st.spinner("Fetching from GitHub..."):
-                files = fetch_github_files(gh_repo, gh_branch, gh_path)
-                if files: st.session_state["gh_files"] = files; st.success(f"✅ Found {len(files)} compatible files")
-                else: st.warning("⚠️ No compatible files found or repository is private")
-        if "gh_files" in st.session_state and st.session_state["gh_files"]:
-            gh_file_map = {k: f for k in SAMPLE_CATALOG if (f := find_github_file_by_catalog_key(k, st.session_state["gh_files"]))}
-            if gh_file_map:
-                selected_gh_key = st.selectbox("Select sample from GitHub", options=list(gh_file_map.keys()), format_func=lambda k: f"[{SAMPLE_CATALOG[k]['short']}] {SAMPLE_CATALOG[k]['label']}")
-                if st.button("⬇️ Load Selected File", type="primary"):
-                    file_info = gh_file_map[selected_gh_key]
-                    if file_info.get("download_url"):
-                        with st.spinner("Downloading..."):
-                            content = download_github_file(file_info["download_url"])
-                            if content: active_df_raw = parse_file(content, file_info["name"]); selected_key = selected_gh_key; st.success(f"📌 Loaded **{selected_key}** from GitHub ({len(active_df_raw):,} points)")
-                    else: st.error("❌ No download URL available")
-            else: st.info("ℹ️ No files in this repo match your SAMPLE_CATALOG. Try the 'GitHub Samples (Pre-loaded)' option below.")
-    elif source_option == "GitHub Samples (Pre-loaded)":
+                
+    elif source_option == "🔗 Raw GitHub URL":
+        st.markdown("### 🔗 Direct Raw File URL")
+        st.caption("Paste the raw GitHub link (e.g., https://raw.githubusercontent.com/owner/repo/main/SAMPLES/CH0_1.ASC)")
+        raw_url = st.text_input("Raw URL", placeholder="https://raw.githubusercontent.com/...", key="raw_url_input")
+        if st.button("⬇️ Load from Raw URL", type="primary"):
+            if raw_url.startswith("http"):
+                with st.spinner("Downloading..."):
+                    content = download_file_from_url(raw_url)
+                    if content and len(content) > 100:
+                        active_df_raw = parse_file(content, raw_url.split("/")[-1])
+                        st.success(f"✅ Loaded ({len(active_df_raw):,} data points)")
+                    else:
+                        st.error("❌ Failed to download or file is empty. Check URL and ensure repo is public.")
+            else:
+                st.warning("⚠️ Please enter a valid http/https URL")
+                
+    elif source_option == "📦 GitHub Samples (Pre-loaded)":
         st.markdown("### 📦 Mediloy S Co Samples from GitHub")
         st.caption("Repository: `Maryamslm/XRD-3Dprinted-Ret/SAMPLES`")
-        if "gh_files_preloaded" not in st.session_state:
-            with st.spinner("🔍 Fetching sample files from GitHub..."):
-                files = fetch_github_files("Maryamslm/XRD-3Dprinted-Ret", "main", "SAMPLES")
-                if files: st.session_state["gh_files_preloaded"] = {f["name"].upper(): f for f in files}; st.success(f"✅ Found {len(files)} compatible files")
-                else: st.warning("⚠️ Could not fetch files. Check internet connection or repo visibility."); st.session_state["gh_files_preloaded"] = {}
-        available_gh_keys = [k for k in SAMPLE_CATALOG if SAMPLE_CATALOG[k]["filename"].upper() in st.session_state.get("gh_files_preloaded", {})]
-        if available_gh_keys:
-            selected_key = st.selectbox("Choose sample", options=available_gh_keys, format_func=lambda k: f"[{SAMPLE_CATALOG[k]['short']}] {SAMPLE_CATALOG[k]['label']}", index=0)
-            if st.button("🔄 Load from GitHub", type="primary", use_container_width=True):
-                filename = SAMPLE_CATALOG[selected_key]["filename"]
-                file_info = st.session_state["gh_files_preloaded"].get(filename.upper())
-                if file_info and file_info.get("download_url"):
-                    with st.spinner("Downloading..."):
-                        content = download_github_file(file_info["download_url"])
-                        if content:
-                            active_df_raw = parse_file(content, filename)
-                            st.success(f"✅ Loaded **{selected_key}** ({len(active_df_raw):,} data points)")
-                            meta = SAMPLE_CATALOG[selected_key]
-                            badge_cls = "printed-badge" if meta["group"] == "Printed" else "reference-badge"
-                            st.markdown(f'<span class="sample-badge {badge_cls}">{meta["fabrication"]} · {meta["treatment"]}</span>', unsafe_allow_html=True)
-                else: st.error("❌ No download URL available for this file")
-        else: st.warning("⚠️ No catalog-matched files found in GitHub SAMPLES folder.")
+        if st.session_state.get("gh_load_failed", False):
+            st.warning("⚠️ GitHub API failed. Please use **Direct Upload** or **Raw URL** above.")
+        else:
+            if "gh_files_preloaded" not in st.session_state:
+                with st.spinner("🔍 Fetching sample files from GitHub..."):
+                    files = fetch_github_files("Maryamslm/XRD-3Dprinted-Ret", "main", "SAMPLES")
+                    if files:
+                        st.session_state["gh_files_preloaded"] = {f["name"].upper(): f for f in files}
+                        st.success(f"✅ Found {len(files)} compatible files")
+                    else:
+                        st.session_state["gh_load_failed"] = True
+                        st.warning("⚠️ No files found. The repo may be private or the path is incorrect. Switch to 'Direct Upload'.")
+                        st.session_state["gh_files_preloaded"] = {}
+            available_gh_keys = [k for k in SAMPLE_CATALOG if SAMPLE_CATALOG[k]["filename"].upper() in st.session_state.get("gh_files_preloaded", {})]
+            if available_gh_keys:
+                selected_key = st.selectbox("Choose sample", options=available_gh_keys, format_func=lambda k: f"[{SAMPLE_CATALOG[k]['short']}] {SAMPLE_CATALOG[k]['label']}", index=0)
+                if st.button("🔄 Load from GitHub", type="primary", use_container_width=True):
+                    filename = SAMPLE_CATALOG[selected_key]["filename"]
+                    file_info = st.session_state["gh_files_preloaded"].get(filename.upper())
+                    if file_info and file_info.get("download_url"):
+                        with st.spinner("Downloading..."):
+                            content = download_file_from_url(file_info["download_url"])
+                            if content:
+                                active_df_raw = parse_file(content, filename)
+                                st.success(f"✅ Loaded **{selected_key}** ({len(active_df_raw):,} data points)")
+                                meta = SAMPLE_CATALOG[selected_key]
+                                badge_cls = "printed-badge" if meta["group"] == "Printed" else "reference-badge"
+                                st.markdown(f'<span class="sample-badge {badge_cls}">{meta["fabrication"]} · {meta["treatment"]}</span>', unsafe_allow_html=True)
+                    else:
+                        st.error("❌ No download URL available for this file")
+            else:
+                st.warning("⚠️ No catalog-matched files found. Use 'Direct Upload' to load your files manually.")
+                
+    elif source_option == "Demo samples":
+        if selected_key in all_data:
+            active_df_raw = all_data[selected_key]
+            st.success(f"📌 Sample **{selected_key}** — {meta['label']}")
+        else:
+            st.warning("⚠️ Local demo file missing. Will use synthetic fallback.")
+            
     if active_df_raw is None or len(active_df_raw) == 0:
         two_theta = np.linspace(30, 130, 2000)
         intensity = np.zeros_like(two_theta)
@@ -749,8 +754,9 @@ with st.sidebar:
             intensity += 5000 * np.exp(-((two_theta - pk["two_theta"])/0.8)**2)
         intensity += np.random.normal(0, 50, size=len(two_theta)) + 200
         active_df_raw = pd.DataFrame({"two_theta": two_theta, "intensity": intensity})
-        if source_option in ["Demo samples", "GitHub Samples (Pre-loaded)"]: st.info("📌 Using synthetic demo data (no local/GitHub files found)")
-        else: st.warning("⚠️ Generating synthetic XRD pattern for demonstration.")
+        if source_option != "📤 Direct Upload (Recommended)":
+            st.info("📌 Using synthetic demo data (no files loaded yet)")
+            
     st.markdown("---")
     st.subheader("🔬 Instrument")
     source_name = st.selectbox("X-ray Source Tube", list(XRAY_SOURCES.keys()), index=0)
@@ -866,11 +872,11 @@ with st.sidebar:
 
 if "jump_to" in st.session_state and st.session_state["jump_to"] != selected_key:
     selected_key = st.session_state.pop("jump_to")
-    if source_option == "GitHub Samples (Pre-loaded)" and selected_key in SAMPLE_CATALOG:
+    if source_option == "📦 GitHub Samples (Pre-loaded)" and selected_key in SAMPLE_CATALOG:
         filename = SAMPLE_CATALOG[selected_key]["filename"]
         file_info = st.session_state.get("gh_files_preloaded", {}).get(filename.upper())
         if file_info and file_info.get("download_url"):
-            content = download_github_file(file_info["download_url"])
+            content = download_file_from_url(file_info["download_url"])
             if content: active_df_raw = parse_file(content, filename)
 
 mask = (active_df_raw["two_theta"] >= tt_min) & (active_df_raw["two_theta"] <= tt_max)
