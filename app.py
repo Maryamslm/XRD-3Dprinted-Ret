@@ -249,7 +249,7 @@ def fetch_cif_from_materials_project(mp_id: str, api_key: str = None) -> dict:
         st.error(f"❌ MP fetch failed: {e}")
         return {}
 
-def generate_peaks_from_cif(cif_ dict, wavelength: float, tt_min: float, tt_max: float) -> pd.DataFrame:
+def generate_peaks_from_cif(cif_data: dict, wavelength: float, tt_min: float, tt_max: float) -> pd.DataFrame:
     sg = cif_data.get("space_group_hm", "")
     a = cif_data["cell_params"].get("length_a", 3.544)
     c = cif_data["cell_params"].get("length_c", None)
@@ -673,7 +673,7 @@ with st.sidebar:
     st.subheader("📂 Data Source")
     source_option = st.radio("Choose data source", ["Demo samples", "Upload file", "GitHub repository", "GitHub Samples (Pre-loaded)"], index=3)
     if source_option == "Demo samples":
-        if selected_key in all_
+        if selected_key in all_data:
             active_df_raw = all_data[selected_key]
             st.success(f"📌 Sample **{selected_key}** — {meta['label']}")
         else: st.warning("⚠️ Local demo file missing. Will use synthetic fallback.")
@@ -763,9 +763,9 @@ with st.sidebar:
         st.info("✅ Pre-integrated phases with verified lattice parameters:")
         for ph_name, ph_data in PHASE_LIBRARY.items():
             src_badge = ""
-            if "cod_id" in ph_
+            if "cod_id" in ph_data:
                 src_badge = f"🔗 [COD:{ph_data['cod_id']}]({ph_data['cif_source']})"
-            elif "mp_id" in ph_
+            elif "mp_id" in ph_data:
                 src_badge = f"⚛️ [MP:{ph_data['mp_id']}]({ph_data['cif_source']})"
             st.markdown(f"- **{ph_name}**: {ph_data['space_group']} • a={ph_data['lattice'].get('a','?')}Å {src_badge}")
     elif db_source == "COD (Crystallography Open DB)":
@@ -795,7 +795,7 @@ with st.sidebar:
         if st.button("🔍 Fetch from Materials Project", key="fetch_mp_btn"):
             with st.spinner(f"Fetching MP:{mp_input}..."):
                 mp_data = fetch_cif_from_materials_project(mp_input, mp_api_key if mp_api_key else None)
-                if mp_data and "error" not in mp_
+                if mp_data and "error" not in mp_data:
                     st.success(f"✅ Fetched MP:{mp_input}")
                     col_m1, col_m2 = st.columns(2)
                     with col_m1: st.markdown(f"**Formula**: {mp_data.get('chemical_formula', 'N/A')}"); st.markdown(f"**Space Group**: {mp_data.get('space_group_hm', 'N/A')} (No. {mp_data.get('space_group_number','?')})"); st.markdown(f"[🔗 View on Materials Project]({mp_data.get('mp_url')})")
@@ -829,9 +829,9 @@ with st.sidebar:
     selected_phases = []
     for ph_name, ph_data in all_phases.items():
         label = ph_name
-        if "cod_id" in ph_
+        if "cod_id" in ph_data:
             label = f"{ph_name} 🔗 COD:{ph_data['cod_id']}"
-        elif "mp_id" in ph_
+        elif "mp_id" in ph_data:
             label = f"{ph_name} ⚛️ MP:{ph_data['mp_id']}"
         elif ph_name in (st.session_state.get("custom_phases", {}) or {}):
             label = f"{ph_name} 📤 Custom"
