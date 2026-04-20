@@ -18,7 +18,6 @@ plotly
 matplotlib
 scipy
 requests
-# Optional: GSAS-II (for advanced refinement)
 streamlit>=1.28.0
 numpy>=1.24.0
 pandas>=2.0.0
@@ -26,7 +25,6 @@ plotly>=5.18.0
 matplotlib>=3.7.0
 scipy>=1.11.0
 requests>=2.31.0
-# requirements.txt
 streamlit>=1.32.0
 numpy>=1.24
 scipy>=1.10
