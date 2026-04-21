@@ -9,5 +9,5 @@
 
 [![Static Badge](https://img.shields.io/badge/XRD3DprintedRET2-v5.0-brightgreen.svg)](https://xrd-analysis5.streamlit.app/) (Retvield refinement r5, Numerically Working but Physically Inconsistent, powerxrd fully functional, use powerxrd >=2.3.0,4.0.0, syntax debugging is necessary at TAB 6 code)
 
-[![Static Badge](https://img.shields.io/badge/XRD3DprintedRET-v6.0-brightgreen.svg)]((https://xrd-analysis-r6py-jyl9ldqckfvu6nlqwfuqrb.streamlit.app/) 
+[![Static Badge](https://img.shields.io/badge/XRD3DprintedRET-v6.0-brightgreen.svg)](https://xrd-analysis-r6py-jyl9ldqckfvu6nlqwfuqrb.streamlit.app/) 
 (Retvield refinement r6)
