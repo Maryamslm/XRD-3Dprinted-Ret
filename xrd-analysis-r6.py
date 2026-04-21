@@ -681,3 +681,367 @@ class NumbaRietveldRefiner:
     def _calculate_pattern(self, params: np.ndarray) -> np.ndarray:
         n_bg_params = self.bg_order + 1
         y_calc = self._calculate_background(params[:n_bg_params], self.x)
+        
+        n_peaks = len(self.all_peak_positions)
+        if n_peaks == 0:
+            return y_calc
+        
+        amps = np.zeros(n_peaks, dtype=np.float64)
+        fwhms = np.zeros(n_peaks, dtype=np.float64)
+        idx = n_bg_params
+        
+        for i in range(n_peaks):
+            idx += 1
+            if idx < len(params):
+                amps[i] = max(0, params[idx])
+            idx += 1
+            if idx < len(params):
+                fwhms[i] = max(0.01, params[idx])
+        
+        for k in range(n_peaks):
+            pos = self.all_peak_positions[k]
+            amp = amps[k]
+            fwhm = fwhms[k]
+            lp = self.all_lp_factors[k]
+            for i in range(len(self.x)):
+                t = (self.x[i] - pos) / fwhm
+                gauss = np.exp(-4.0 * np.log(2.0) * t * t)
+                lorentz = 1.0 / (1.0 + 4.0 * t * t)
+                profile = self.eta * lorentz + (1.0 - self.eta) * gauss
+                y_calc[i] += amp * lp * profile
+        
+        return y_calc
+    
+    def _residuals(self, params: np.ndarray) -> np.ndarray:
+        y_calc = self._calculate_pattern(params)
+        weights = 1.0 / np.sqrt(np.abs(self.y_obs) + 1)
+        return weights * (self.y_obs - y_calc)
+    
+    def _initial_params(self) -> np.ndarray:
+        params = []
+        bg_level = np.percentile(self.y_obs, 10)
+        params = [bg_level] + [0.0] * self.bg_order
+        
+        for i, pos in enumerate(self.all_peak_positions):
+            params.append(pos)
+            idx = np.argmin(np.abs(self.x - pos))
+            peak_height = max(0, self.y_obs[idx] - np.percentile(self.y_obs, 10))
+            params.append(peak_height * 0.5)
+            params.append(0.3)
+        
+        return np.array(params, dtype=np.float64)
+    
+    def run(self, max_iter: int = 100, tolerance: float = 1e-4) -> Dict[str, Any]:
+        params0 = self._initial_params()
+        
+        try:
+            bounds_lower = []
+            bounds_upper = []
+            for i in range(self.bg_order + 1):
+                bounds_lower.append(-1e6 if i > 0 else 0)
+                bounds_upper.append(1e6)
+            
+            for i, pos in enumerate(self.all_peak_positions):
+                bounds_lower.extend([pos - 0.5, 0, 0.01])
+                bounds_upper.extend([pos + 0.5, 1e6, 2.0])
+            
+            result = least_squares(self._residuals, params0, bounds=(bounds_lower, bounds_upper),
+                                  method='trf', max_nfev=max_iter, ftol=tolerance, xtol=tolerance)
+            converged = result.success
+            params_opt = result.x
+        except Exception as e:
+            logger.warning(f"Optimization warning: {e}")
+            converged = False
+            params_opt = params0
+        
+        y_calc = self._calculate_pattern(params_opt)
+        y_bg = self._calculate_background(params_opt[:self.bg_order+1], self.x)
+        resid = self.y_obs - y_calc
+        
+        Rwp = np.sqrt(np.sum(resid**2) / np.sum(self.y_obs**2)) * 100.0
+        n_params = len(params_opt)
+        n_data = len(self.x)
+        Rexp = np.sqrt(max(1, n_data - n_params)) / np.sqrt(np.sum(self.y_obs) + 1e-10) * 100.0
+        chi2 = (Rwp / max(Rexp, 0.01))**2
+        
+        phase_amps = {}
+        amp_idx = self.bg_order + 1
+        for ph_idx, (ph_name, cnt) in enumerate(zip(self.phases, self.phase_peak_counts)):
+            amp_sum = 0.0
+            for _ in range(cnt):
+                amp_idx += 1
+                if amp_idx < len(params_opt):
+                    amp_sum += abs(params_opt[amp_idx])
+                amp_idx += 1
+            phase_amps[ph_name] = amp_sum
+        
+        total = sum(phase_amps.values()) or 1.0
+        phase_fractions = {ph: amp/total for ph, amp in phase_amps.items()}
+        
+        lattice_params = {}
+        for phase in self.phases:
+            lp = PHASE_LIBRARY[phase]["lattice"].copy()
+            lattice_params[phase] = lp
+        
+        return {
+            "converged": converged,
+            "Rwp": float(Rwp),
+            "Rexp": float(Rexp),
+            "chi2": float(chi2),
+            "y_calc": y_calc,
+            "y_background": y_bg,
+            "residuals": resid,
+            "zero_shift": 0.0,
+            "phase_fractions": phase_fractions,
+            "lattice_params": lattice_params,
+            "engine": f"Built-in Numba ({self.bg_model} bg, {self.peak_profile} profile)"
+        }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STREAMLIT MAIN APP
+# ═══════════════════════════════════════════════════════════════════════════════
+
+st.set_page_config(page_title="XRD Rietveld — Co-Cr Dental Alloy", page_icon="⚙️", layout="wide")
+
+st.title("⚙️ XRD Rietveld Refinement — Co-Cr Dental Alloy")
+st.caption("Mediloy S Co · BEGO · Co-Cr-Mo-W-Si · SLM-Printed × HT/As-built • COD Database Integration")
+
+# Sidebar
+with st.sidebar:
+    st.header("🔭 Sample Selection")
+    selected_key = st.selectbox("Active sample", options=SAMPLE_KEYS, 
+                                format_func=lambda k: f"{SAMPLE_CATALOG[k]['short']} — {SAMPLE_CATALOG[k]['label']}", index=0)
+    
+    meta = SAMPLE_CATALOG[selected_key]
+    st.markdown(f"**{meta['fabrication']}** · {meta['treatment']}")
+    st.caption(meta["description"])
+    
+    st.markdown("---")
+    st.subheader("🔬 Instrument Configuration")
+    
+    source_name = st.selectbox("X-ray Source Tube", list(XRAY_SOURCES.keys()), index=0)
+    if source_name != "Custom Wavelength":
+        wavelength = XRAY_SOURCES[source_name]
+    else:
+        wavelength = st.number_input("λ (Å)", value=1.5406, min_value=0.5, max_value=2.5, step=0.0001, format="%.4f")
+    
+    st.markdown("---")
+    st.subheader("🧪 Phase Selection")
+    
+    selected_phases = []
+    for ph_name, ph_data in PHASE_LIBRARY.items():
+        default_checked = ph_data.get("default", False)
+        if st.checkbox(f"{ph_name} ({ph_data['system']})", value=default_checked, help=ph_data["description"]):
+            selected_phases.append(ph_name)
+    
+    if not selected_phases:
+        st.warning("⚠️ Select at least one phase for refinement")
+    
+    st.markdown("---")
+    st.subheader("⚙️ Refinement Configuration")
+    
+    engine = st.radio("Refinement engine", ["Built‑in (Numba)"], index=0)
+    bg_model = st.selectbox("Background model", ['chebyshev', 'polynomial'], index=0)
+    bg_order = st.slider("Background order", 2, 8, 4)
+    peak_profile = st.selectbox("Peak profile", ['pseudo-voigt', 'gaussian'], index=0)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        tt_min = st.number_input("2θ min (°)", value=30.0, min_value=10.0, max_value=170.0, step=1.0)
+    with col2:
+        tt_max = st.number_input("2θ max (°)", value=130.0, min_value=20.0, max_value=180.0, step=1.0)
+    
+    run_btn = st.button("▶ Run Rietveld Refinement", type="primary", use_container_width=True)
+
+# Load sample data
+active_df_raw = None
+for key, info in SAMPLE_CATALOG.items():
+    if key == selected_key:
+        demo_path = os.path.join(os.path.dirname(__file__), "demo_data", info["filename"])
+        if os.path.exists(demo_path):
+            with open(demo_path, "rb") as f:
+                active_df_raw = parse_asc(f.read())
+        break
+
+if active_df_raw is None or len(active_df_raw) == 0:
+    two_theta = np.linspace(30, 130, 2000)
+    intensity = np.zeros_like(two_theta)
+    for _, pk in generate_theoretical_peaks("FCC-Co", 1.5406, 30, 130).iterrows():
+        intensity += 5000 * np.exp(-((two_theta - pk["two_theta"])/0.3)**2 * np.log(2))
+    intensity += 200 + 0.5 * (two_theta - 30)
+    intensity = np.maximum(0, intensity + np.random.normal(0, np.sqrt(intensity) * 0.5))
+    active_df_raw = pd.DataFrame({"two_theta": two_theta, "intensity": intensity})
+
+mask = (active_df_raw["two_theta"] >= tt_min) & (active_df_raw["two_theta"] <= tt_max)
+active_df = active_df_raw[mask].copy().reset_index(drop=True)
+
+# Tabs
+tabs = st.tabs(["📈 Raw Pattern", "🔍 Peak ID", "🧮 Rietveld Fit", "📊 Quantification", "🗄️ COD Database"])
+
+# Tab 0: Raw Pattern
+with tabs[0]:
+    st.subheader(f"Raw XRD Pattern — {meta['label']}")
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=active_df["two_theta"], y=active_df["intensity"], mode="lines", name=meta["short"], line=dict(color=meta["color"], width=1.2)))
+    fig.update_layout(xaxis_title="2θ (degrees)", yaxis_title="Intensity (counts)", template="plotly_white", height=450)
+    st.plotly_chart(fig, use_container_width=True)
+
+# Tab 1: Peak ID
+with tabs[1]:
+    st.subheader("Peak Detection & Phase Matching")
+    
+    obs_peaks = find_peaks_in_data(active_df, min_height_factor=2.2, min_distance_deg=0.3)
+    theo = {ph: generate_theoretical_peaks(ph, wavelength, tt_min, tt_max) for ph in selected_phases}
+    matches = match_phases_to_data(obs_peaks, theo, tol_deg=0.18)
+    
+    fig_id = go.Figure()
+    fig_id.add_trace(go.Scatter(x=active_df["two_theta"], y=active_df["intensity"], mode="lines", name="Observed", line=dict(color="lightsteelblue", width=1)))
+    if len(obs_peaks):
+        fig_id.add_trace(go.Scatter(x=obs_peaks["two_theta"], y=obs_peaks["intensity"], mode="markers", name="Detected peaks", marker=dict(symbol="triangle-down", size=10, color="crimson")))
+    st.plotly_chart(fig_id, use_container_width=True)
+    
+    if len(obs_peaks):
+        disp = obs_peaks.copy()
+        disp["Phase match"] = matches["phase"].values
+        disp["(hkl)"] = matches["hkl"].values
+        st.dataframe(disp[["two_theta","intensity","Phase match","(hkl)"]], use_container_width=True)
+
+# Tab 2: Rietveld Fit
+with tabs[2]:
+    st.subheader("Rietveld Refinement")
+    
+    if not selected_phases:
+        st.warning("☑️ Select at least one phase in the sidebar")
+    elif not run_btn:
+        st.info("Configure settings in the sidebar, then click ▶ Run Rietveld Refinement")
+    else:
+        with st.spinner(f"Running refinement using {engine}..."):
+            try:
+                refiner = NumbaRietveldRefiner(active_df, selected_phases, wavelength, bg_model=bg_model, bg_order=bg_order, peak_profile=peak_profile)
+                result = refiner.run()
+                
+                st.success(f"✅ Refinement complete: R_wp = {result['Rwp']:.2f}% · χ² = {result['chi2']:.3f}")
+                
+                fig_rv = make_subplots(rows=2, cols=1, row_heights=[0.78, 0.22], shared_xaxes=True, vertical_spacing=0.04)
+                fig_rv.add_trace(go.Scatter(x=active_df["two_theta"], y=active_df["intensity"], mode="lines", name="Observed", line=dict(color="#1f77b4", width=1)), row=1, col=1)
+                fig_rv.add_trace(go.Scatter(x=active_df["two_theta"], y=result["y_calc"], mode="lines", name="Calculated", line=dict(color="#d62728", width=1.5)), row=1, col=1)
+                diff = active_df["intensity"].values - result["y_calc"]
+                fig_rv.add_trace(go.Scatter(x=active_df["two_theta"], y=diff, mode="lines", name="Difference", line=dict(color="#7f7f7f", width=0.8)), row=2, col=1)
+                fig_rv.update_layout(template="plotly_white", height=500, xaxis2_title="2θ (degrees)", yaxis_title="Intensity (counts)")
+                st.plotly_chart(fig_rv, use_container_width=True)
+                
+                st.session_state["last_result"] = result
+                st.session_state["last_phases"] = selected_phases
+                
+            except Exception as e:
+                st.error(f"❌ Refinement failed: {e}")
+
+# Tab 3: Quantification
+with tabs[3]:
+    st.subheader("Phase Quantification")
+    
+    if "last_result" in st.session_state:
+        result = st.session_state["last_result"]
+        phases = st.session_state["last_phases"]
+        
+        fracs = result["phase_fractions"]
+        labels = list(fracs.keys())
+        values = [fracs[ph]*100 for ph in labels]
+        
+        fig_pie = go.Figure(go.Pie(labels=labels, values=values, hole=0.4, textinfo="label+percent"))
+        fig_pie.update_layout(title="Phase weight fractions", height=400)
+        st.plotly_chart(fig_pie, use_container_width=True)
+        
+        rows = []
+        for ph in labels:
+            pi = PHASE_LIBRARY.get(ph, {})
+            rows.append({"Phase": ph, "Crystal system": pi.get("system", "Unknown"), "Wt%": f"{fracs.get(ph,0)*100:.2f}"})
+        st.dataframe(pd.DataFrame(rows), use_container_width=True)
+    else:
+        st.info("🔬 Run Rietveld refinement first")
+
+# Tab 4: COD Database
+with tabs[4]:
+    st.subheader("🔬 Crystallography Open Database (COD) Integration")
+    st.markdown("Query the [Crystallography Open Database](https://www.crystallography.net/cod/) for crystallographic structures")
+    
+    query_type = st.radio("Query type", ["Known phase (Co-Cr)", "Chemical formula", "COD ID"], horizontal=True)
+    
+    if query_type == "Known phase (Co-Cr)":
+        known_phases = ["FCC-Co", "HCP-Co", "Cr23C6", "Sigma_CoCr", "CoCr"]
+        selected_cod_phase = st.selectbox("Select phase", known_phases)
+        
+        if st.button("🔍 Query COD", type="primary"):
+            with st.spinner(f"Fetching {selected_cod_phase} from COD..."):
+                phase_data = CODClient.get_phase_from_cod(selected_cod_phase)
+                if phase_data:
+                    st.success(f"✅ Retrieved structure for {selected_cod_phase}")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown(f"**Crystal System:** {phase_data.get('system', 'Unknown')}")
+                        st.markdown(f"**Space Group:** {phase_data.get('space_group', 'Unknown')}")
+                    with col2:
+                        lat = phase_data.get("lattice", {})
+                        st.markdown(f"**Lattice:** a={lat.get('a',0):.4f}, b={lat.get('b',0):.4f}, c={lat.get('c',0):.4f} Å")
+                    
+                    peaks = phase_data.get("peaks", [])
+                    if peaks:
+                        st.markdown("**Theoretical Peaks (Cu Kα):**")
+                        peak_df = pd.DataFrame(peaks, columns=["hkl", "2θ (°)"])
+                        st.dataframe(peak_df, use_container_width=True)
+                    
+                    if st.button("➕ Add to Phase Library"):
+                        PHASE_LIBRARY[selected_cod_phase] = {
+                            "system": phase_data.get("system", "Unknown"),
+                            "space_group": phase_data.get("space_group", "P1"),
+                            "lattice": phase_data.get("lattice", {"a": 3.544}),
+                            "peaks": phase_data.get("peaks", []),
+                            "color": "#17becf",
+                            "default": False,
+                            "marker_shape": "s",
+                            "description": f"Structure from COD - {selected_cod_phase}"
+                        }
+                        st.success(f"✅ Added {selected_cod_phase} to phase library! Refresh the sidebar to see it.")
+                else:
+                    st.warning(f"Could not retrieve {selected_cod_phase} from COD")
+    
+    elif query_type == "Chemical formula":
+        formula = st.text_input("Chemical formula (e.g., Co, Cr23C6, CoCr)", value="Co")
+        if st.button("🔍 Search COD", type="primary"):
+            with st.spinner(f"Searching COD for {formula}..."):
+                results = CODClient.search_by_formula(formula, limit=10)
+                if results:
+                    st.success(f"Found {len(results)} entries")
+                    for res in results:
+                        with st.expander(f"{res.get('mineral', formula)} — COD ID: {res.get('cod_id')}"):
+                            st.json(res)
+                            if st.button(f"Download CIF", key=f"cif_{res['cod_id']}"):
+                                cif = CODClient.fetch_cif(res["cod_id"])
+                                if cif:
+                                    st.download_button("⬇️ Save CIF", data=cif, file_name=f"COD_{res['cod_id']}.cif", mime="text/plain")
+                else:
+                    st.warning(f"No results found for {formula}")
+    
+    else:
+        cod_id = st.number_input("COD ID", min_value=1000000, max_value=9999999, value=9011605, step=1)
+        if st.button("🔍 Fetch by ID", type="primary"):
+            with st.spinner(f"Fetching COD ID {cod_id}..."):
+                cif = CODClient.fetch_cif(cod_id)
+                if cif:
+                    st.success(f"✅ Retrieved CIF for COD ID {cod_id}")
+                    phase_data = CODClient.parse_cif_to_phase(cif)
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown(f"**Crystal System:** {phase_data.get('system', 'Unknown')}")
+                        st.markdown(f"**Space Group:** {phase_data.get('space_group', 'Unknown')}")
+                    with col2:
+                        lat = phase_data.get("lattice", {})
+                        st.markdown(f"**Lattice:** a={lat.get('a',0):.4f}, b={lat.get('b',0):.4f}, c={lat.get('c',0):.4f} Å")
+                    with st.expander("📄 CIF Content (first 2000 chars)"):
+                        st.code(cif[:2000] + ("..." if len(cif) > 2000 else ""), language="cif")
+                    st.download_button("⬇️ Download Full CIF", data=cif, file_name=f"COD_{cod_id}.cif", mime="text/plain")
+                else:
+                    st.warning(f"Could not retrieve COD ID {cod_id}")
+
+st.markdown("---")
+st.caption("XRD Rietveld App v2.2.0 • Co-Cr Dental Alloy Analysis • COD Database Integration")
